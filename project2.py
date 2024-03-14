@@ -207,14 +207,26 @@ def proximity(curve_points, latent):
     return pd_min_max
 
 
-def fisher_rao_metric():
+def fisher_rao_curve_energy(f, c):
     """
-    Compute the Fisher-Rao metric on the latent space.
+    Inputs:
+        f: Rd -> probability distribution on RD
+        c: R1 -> Rd
+
+    Numerically estimate the Fisher-Rao energy of a curve in latent space.
 
     The function returns a scalar.
     """
-    pass
 
+    def kl_scalar(f1, f2):
+        return KL(f1, f2).item()
+
+    xs = torch.linspace(0, 1, N)
+    integral = 0
+    for i, in range(len(xs[:-1])):
+        integral += KL(f(c(xs[i])), f(x(xs[i+1]))).item()
+    return integral / N
+    
 
 if __name__ == "__main__":
     from torchvision import datasets, transforms
