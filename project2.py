@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.distributions as td
 from torch.distributions.kl import kl_divergence as KL
 import torch.utils.data
+from curve import compute_geodesic_dm
 from tqdm import tqdm
 
 
@@ -207,25 +208,6 @@ def proximity(curve_points, latent):
     return pd_min_max
 
 
-def fisher_rao_curve_energy(f, c):
-    """
-    Inputs:
-        f: Rd -> probability distribution on RD
-        c: R1 -> Rd
-
-    Numerically estimate the Fisher-Rao energy of a curve in latent space.
-
-    The function returns a scalar.
-    """
-
-    def kl_scalar(f1, f2):
-        return KL(f1, f2).item()
-
-    xs = torch.linspace(0, 1, N)
-    integral = 0
-    for i, in range(len(xs[:-1])):
-        integral += KL(f(c(xs[i])), f(x(xs[i+1]))).item()
-    return integral / N
     
 
 if __name__ == "__main__":
@@ -319,10 +301,10 @@ if __name__ == "__main__":
         latents, labels = [], []
         with torch.no_grad():
             for x, y in mnist_train_loader:
-                z = model.encoder(x)
+                z = model.encoder(x.to(device))
                 latents.append(z.mean)
                 labels.append(y)
-            latents = torch.concatenate(latents, dim=0)
+            latents = torch.concatenate(latents, dim=0).cpu()
             labels = torch.concatenate(labels, dim=0)
 
         ## Plot training data
@@ -332,14 +314,19 @@ if __name__ == "__main__":
             plt.scatter(latents[idx, 0], latents[idx, 1])
             
         ## Plot random geodesics
-        num_curves = 50
+        num_curves = 10
         curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
+
+
+
         for k in range(num_curves):
             i = curve_indices[k, 0]
             j = curve_indices[k, 1]
             z0 = latents[i]
             z1 = latents[j]
             # TODO: Compute, and plot geodesic between z0 and z1
-        
+            ts = compute_geodesic_dm(z0, z1,f=model.decoder, N_pieces=100, steps=400, lr=3e-4)
+            plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1])
+
         plt.savefig(args.plot)
 

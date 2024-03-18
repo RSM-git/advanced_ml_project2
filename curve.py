@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-
+from torch.distributions.kl import kl_divergence as KL
+from tqdm import tqdm
 def euclidean_distance(v1, v2):
     return np.linalg.norm(v1 - v2)
 
@@ -44,15 +45,73 @@ def c(t):
 def d_c_t_mag(t):
     return np.sqrt(4 + 4*t**2)
 
-def compute_curve_energy(c, c_prime, G, dim, N=100):
+def piecewise_curve_length(curve_points):
+    diff = torch.diff(curve_points,dim=0)
+    l = diff.norm(dim=1).sum()
+    return l
+
+def point_in_segment(x1, x2, x3):
+    return x1 <= max(x2, x3) and x1 >= min(x2, x3)
+
+def distance_along_piecewise(p1, p2, points):
+    distance = 0
+    x1, y1 = p1
+    x2, y2 = p2
+    
+    segment_distances = torch.norm(torch.diff(points, dim=0), dim=1)
+    # Iterate through each pair of consecutive points
+    for i in range(len(points) - 1):
+        xi, yi = points[i]
+        xi1, yi1 = points[i + 1]
+
+        x1_in_segment = point_in_segment(x1, xi, xi1)
+        x2_in_segment = point_in_segment(x2, xi, xi1)
+        
+                
+        if x1_in_segment and x2_in_segment:
+            distance += torch.norm(p1-p2)
+        elif x1_in_segment and not x2_in_segment:
+            distance += torch.norm(xi1 - x1) 
+        elif x2_in_segment and not x1_in_segment:
+            distance += torch.norm(x2 - xi) 
+        elif x1 < xi and x2 > xi1:
+            distance += segment_distances[i]
+    
+    return distance
+
+def evaluate_piecewise_curve(x, curve_points, eps=1e-5):
+    for i in range(len(curve_points) - 1):
+        lower =  min(curve_points[i][0], curve_points[i + 1][0])
+        upper =  max(curve_points[i][0], curve_points[i + 1][0])
+        if x >= lower - eps and x <= upper + eps:
+            slope = (curve_points[i+1][1] - curve_points[i][1]) / (curve_points[i+1][0] - curve_points[i][0])
+            intercept = curve_points[i][1] - slope * curve_points[i][0]
+            return slope * x + intercept
+    
+    raise Exception('x out of bounds of curve')
+
+def compute_curve_energy_FR(curve_points, decoder, device='cuda'):
     """
+    Compute the fisher rao curve energy (i.e., integral of KL divergence along the curve)
+    """
+    integral = 0
+    curve_distances = torch.norm(torch.diff(curve_points, dim=0), dim=1)
+
+    kl = KL(decoder(curve_points[1:]), decoder(curve_points[:-1]))
+    integral = (kl * curve_distances).sum() # scale by each distance
+
+    return integral
+
+def compute_curve_energy_G(c, c_prime, G, n_pieces, N=50):
+    """
+    Compute the curve energy given a metric function defined by G
     c: R_1 -> R_n, a curve parameterized on t
     c_prime: R_1 -> R_n, the derivative of the curve
     G: R_n -> R_nxn, the metric function
-    dim: the number of pieces in the model
+    n_pieces: the number of pieces in the model
     N: number of samples
     """
-    total = torch.zeros(dim-1)
+    total = torch.zeros(n_pieces-1)
     for t in range(0, 1, N):
         c_t = c(t)
         G_t = G(c_t)
@@ -71,49 +130,73 @@ def G_assignment(x):
     """
     return torch.eye(2).expand(len(x),-1, -1) * (1 + torch.norm(x, dim=1) ** 2).unsqueeze(-1).unsqueeze(-1)
 
-
-def piecewise_direct_minimization(x1, x2, G, N_pieces=100, steps=1000):
+def linear_piecewise_function(points):
     """
+    Returns a function f(t) that parameterizes the piecewise curve defined by points on just one variable (t)
+    """
+    segments = []
+    
+    for i in range(len(points) - 1):
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+        
+        slope = (y2 - y1) / (x2 - x1)
+        intercept = y1 - slope * x1
+        
+        segment_function = lambda t, slope=slope, intercept=intercept: slope * t + intercept
+        segments.append(segment_function)
+    
+    def f(t):
+        for i, segment_function in enumerate(segments):
+            if t >= points[i][0] and t <= points[i + 1][0]:
+                return segment_function(t)
+        raise Exception('t is out of the domain of the curve')
+    
+    return f
+
+def compute_geodesic_dm(x1, x2, f, N_pieces=50, steps=20, lr=.1, plot=False, device='cuda'):
+    """
+    Compute a geodesic using linear piecewise direct minimization
     x1, x2: R_2
-    G: R_2 -> R_2x2, a metric
+    f: decoder function
     N_pieces: number of pieces to divide the curve into
     steps: number of optimization steps
     """
     v_sp = x2-x1 # shortest euclidean path
-    ts = torch.linspace(0, 1, N_pieces).expand(2,-1).T * v_sp + x1
-    ts_optim = torch.nn.Parameter(torch.clone(ts[1:-1]))
+    curve_points = torch.linspace(0, 1, N_pieces).expand(2,-1).T * v_sp + x1
+    curve_points_optim = torch.nn.Parameter(torch.clone(curve_points[1:-1]))
 
-    opt = torch.optim.Adam([ts_optim], lr=.01)
-    energies = []
-    for _ in range(steps):
-        all_ts = torch.cat([x1.unsqueeze(0), ts_optim, x2.unsqueeze(0)])
+    opt = torch.optim.LBFGS([curve_points_optim], lr=lr)
+    with tqdm(range(steps)) as pbar:
+        for step in pbar:
+            opt.zero_grad()
 
-        t_dot = torch.diff(all_ts, dim=0)
-        opt.zero_grad()
-        c = lambda t: t_dot * t + all_ts[:-1]
-        c_prime = lambda t: t_dot
+            all_curve_points = torch.cat([x1.unsqueeze(0), curve_points_optim, x2.unsqueeze(0)]).to(device)
 
-        energy = compute_curve_energy(c, c_prime, G, N_pieces)
-        energies.append(energy.item())
-        print(energy.item())
-
-        energy.backward()
-        opt.step()
-
-    fig, (ax1, ax2) = plt.subplots(1,2)
-    ax1.plot(energies)
+            energy = compute_curve_energy_FR(all_curve_points, f)
+            energy.backward()
+            opt.step(lambda: energy)
+            
+            energy_p = energy.detach().cpu()
+            pbar.set_description(f"step={step}, energy={energy_p}")
     
-    ts_final = torch.cat([x1.unsqueeze(0), ts_optim, x2.unsqueeze(0)], dim=0)
-    ax2.plot(ts_final.detach().numpy()[:,0], ts_final.detach().numpy()[:,1])
-    plt.show()
-    breakpoint()
+    curve_points_final = torch.cat([x1.unsqueeze(0), curve_points_optim, x2.unsqueeze(0)], dim=0)
+
+    if plot:
+        fig, (ax1, ax2) = plt.subplots(1,2)
+        ax1.plot(energies)
+        ax2.plot(curve_points_final.detach().numpy()[:,0], curve_points_final.detach().numpy()[:,1])
+        plt.show()
+
+    return curve_points_final
+
      
 
 
 def e6():
     x1 = torch.tensor([1, 0])
     x2 = torch.tensor([3, -1])
-    piecewise_direct_minimization(x1, x2, G_assignment)
+    compute_geodesic_dm(x1, x2, G_assignment)
 
 
 def e5():
