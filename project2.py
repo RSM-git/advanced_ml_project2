@@ -212,6 +212,7 @@ def proximity(curve_points, latent):
 
 if __name__ == "__main__":
     from torchvision import datasets, transforms
+    import numpy as np
     import glob
 
     # Parse arguments
@@ -312,12 +313,24 @@ if __name__ == "__main__":
         for k in range(num_classes):
             idx = labels == k
             plt.scatter(latents[idx, 0], latents[idx, 1])
+
+        range_: tuple[int, int] = (-15, 15)
+        num_points: int = 50
+        x, y = np.linspace(*range_, 50), np.linspace(*range_, 50)
+        X, Y = np.meshgrid(x, y)
+
+            ## Heatmap of entropy of the decoder
+        Z = np.zeros_like(X)
+        for i in range(num_points):
+            for j in range(num_points):
+                z = torch.tensor([X[i, j], Y[i, j]]).float()
+                Z[i, j] = model.decoder(z).entropy().mean().item()
+
+        plt.contourf(X, Y, Z, levels=20)
             
         ## Plot random geodesics
-        num_curves = 10
+        num_curves: int = 1
         curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
-
-
 
         for k in range(num_curves):
             i = curve_indices[k, 0]
@@ -325,8 +338,8 @@ if __name__ == "__main__":
             z0 = latents[i]
             z1 = latents[j]
             # TODO: Compute, and plot geodesic between z0 and z1
-            ts = compute_geodesic_dm(z0, z1,f=model.decoder, N_pieces=100, steps=400, lr=3e-4)
-            plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1])
+            ts = compute_geodesic_dm(z0, z1, f=model.decoder, N_pieces=100, steps=100, lr=1e-3, device=device)
+            plt.plot(ts.detach().numpy()[:, 0], ts.detach().numpy()[:, 1])
 
         plt.savefig(args.plot)
 
