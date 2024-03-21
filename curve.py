@@ -181,7 +181,7 @@ def compute_geodesic_dm(x1, x2, energy_function, N_pieces=50, steps=20, lr=.1, p
 
             all_curve_points = torch.cat([x1.unsqueeze(0), curve_points_optim, x2.unsqueeze(0)]).to(device)
 
-            energy = energy_function(all_curve_points)
+            energy = energy_function(all_curve_points) / N_pieces
             energy.backward()
             opt.step()
             

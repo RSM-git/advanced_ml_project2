@@ -209,7 +209,7 @@ def proximity(curve_points, latent):
     return pd_min_max
 
 class EnsembleVAE:
-    def __init__(self, ensemble_path, device='cuda'):
+    def __init__(self, ensemble_path, device='cuda', n_models=None):
         models = []
         for file in os.listdir(ensemble_path):
             path = os.path.join(ensemble_path, file)
@@ -219,7 +219,10 @@ class EnsembleVAE:
             single_model.eval()
             models.append(single_model)
         
-        self.models = models
+        if n_models is not None:
+            self.models = models[:n_models]
+        else:
+            self.models=models
     
     def encoder(self, x):
         return [model.encoder(x) for model in self.models]
@@ -230,6 +233,7 @@ class EnsembleVAE:
         return sum([model.encoder(x).mean for model in self.models])/len(self.models)
     
     def decoder_entropy(self, z):
+        # maybe convert to discrete bernoulli before getting entropy
         return sum([model.decoder(z).entropy().mean().item() for model in self.models])/len(self.models)   
 
     def decoder_curve_energy(self, curve_points, N=10):
@@ -242,9 +246,12 @@ class EnsembleVAE:
             l, k = torch.randint(high=len(self.models), size=(2,))
             f_l = self.models[l].decoder
             f_k = self.models[k].decoder
-            kl = KL(f_l(curve_points[1:]), f_k(curve_points[:-1]))
+            # convert these to standard bernoulli (not continuous)
+            kl = KL(f_l(curve_points[:-1]), f_k(curve_points[1:]))
+            
             total_energy += kl.sum()
-        return total_energy # could divide by number of models here
+        energy = total_energy / N
+        return energy # could divide by number of models here
 
 if __name__ == "__main__":
     from torchvision import datasets, transforms
@@ -254,13 +261,13 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'plot','train_ensemble'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'plot', 'proximity'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
-    parser.add_argument('--n_ensemble', type=int, default=1, help='Number of models in the ensemble')
+    parser.add_argument('--n_ensembles', type=int, default=1, help='Number of models in the ensemble')
     parser.add_argument('--plot', type=str, default='plot.png', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=150, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=15, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
 
     args = parser.parse_args()
@@ -319,7 +326,8 @@ if __name__ == "__main__":
     if args.mode == 'train':
         # Define optimizer
         
-        os.makedirs(args.model)
+        if not os.path.exists(args.model):
+            os.makedirs(args.model)
         for i in range(args.n_ensembles):
             model = VAE(prior, BernoulliDecoder(new_decoder()), encoder).to(device)
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -329,7 +337,7 @@ if __name__ == "__main__":
             # Save model
             model_path = os.path.join(args.model, f'{i}.pt')
             torch.save(model.state_dict(), model_path)
-
+    
     elif args.mode == 'plot':
         import matplotlib.pyplot as plt
 
@@ -347,28 +355,29 @@ if __name__ == "__main__":
             labels = torch.concatenate(labels, dim=0)
 
         range_: tuple[int, int] = (-8, 8)
-        num_points: int = 50
-        x, y = np.linspace(*range_, 50), np.linspace(*range_, 50)
+        resolution: int = 100
+        x, y = np.linspace(*range_, resolution), np.linspace(*range_, resolution)
         X, Y = np.meshgrid(x, y)
 
-            ## Heatmap of entropy of the decoder
+        ## Heatmap of entropy of the decoder
         Z = np.zeros_like(X)
-        for i in range(num_points):
-            for j in range(num_points):
+        for i in range(resolution):
+            for j in range(resolution):
                 z = torch.tensor([X[i, j], Y[i, j]]).float().cuda()
                 Z[i, j] = model.decoder_entropy(z)
 
-        plt.pcolormesh(Z)
+        plt.pcolormesh(X, Y, Z)
         plt.colorbar()
 
         ## Plot training data
         for k in range(num_classes):
             idx = labels == k
-            plt.scatter(latents[idx, 0], latents[idx, 1], s=2)
+            plt.scatter(latents[idx, 0], latents[idx, 1], s=4)
 
         # Plot random geodesics
-        num_curves: int = 3
+        num_curves: int = 10
         curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
+        all_curve_points=[]
         for k in range(num_curves):
             i = curve_indices[k, 0]
             j = curve_indices[k, 1]
@@ -379,8 +388,25 @@ if __name__ == "__main__":
             # z1 = latents[latents.argmax(dim=0)]
             
             # TODO: Compute, and plot geodesic between z0 and z1
-            ts = compute_geodesic_dm(z0, z1,energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=3e-4)
+            ts = compute_geodesic_dm(z0, z1,energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=3e-3)
+            all_curve_points.append(ts)
             plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1], color='r')
 
         plt.savefig(args.plot)
+        plt.clf()
+    
+    elif args.mode == 'proximity':  
+        
+        import matplotlib.pyplot as plt
+        proximities=[]
+
+        for i in range(10):
+            model = EnsembleVAE(args.model, device=args.device,n_models=i+1)
+            ts = compute_geodesic_dm(z0, z1,energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=3e-3)
+            all_curve_points.append(ts)
+
+            for curve_points in all_curve_points:
+                p = proximity(curve_points, latents)
+                proximities.append(p)
+
 
