@@ -89,6 +89,7 @@ class BernoulliDecoder(nn.Module):
         """
         logits = self.decoder_net(z)
         return td.Independent(td.ContinuousBernoulli(logits=logits), 3)
+        # return td.Independent(td.Bernoulli(logits=logits), 3)
 
 
 class VAE(nn.Module):
@@ -247,8 +248,14 @@ class EnsembleVAE:
             f_l = self.models[l].decoder
             f_k = self.models[k].decoder
             # convert these to standard bernoulli (not continuous)
-            kl = KL(f_l(curve_points[:-1]), f_k(curve_points[1:]))
-            
+            c_f_l = lambda z: td.Bernoulli(logits=f_l(z).mean)
+            c_f_k = lambda z: td.Bernoulli(logits=f_k(z).mean)
+
+            kl = KL(c_f_l(curve_points[:-1]), c_f_k(curve_points[1:]))
+
+            if kl.sum() < 0:
+                print('negative kl')
+
             total_energy += kl.sum()
         energy = total_energy / N
         return energy # could divide by number of models here
