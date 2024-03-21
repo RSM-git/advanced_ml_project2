@@ -204,7 +204,7 @@ def proximity(curve_points, latent):
     The function returns a scalar.
     """
     pd = torch.cdist(curve_points, latent)  # M x N
-    pd_min, _ = torch.min(pd, dim=0)
+    pd_min, _ = torch.min(pd, dim=1)
     pd_min_max = pd_min.max()
     return pd_min_max
 
