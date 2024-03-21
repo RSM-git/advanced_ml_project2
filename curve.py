@@ -95,17 +95,20 @@ def compute_curve_energy_FR(curve_points, decoder, device='cuda'):
     Compute the fisher rao curve energy (i.e., integral of KL divergence along the curve)
     QUESTION: do we need to scale by each curve length for the integral???
     """
-    energy = 0
-    curve_distances = torch.norm(torch.diff(curve_points, dim=0), dim=1)
+    #energy = 0
+    # for i in range(len(curve_points) - 1):
+    #     kl = KL(decoder(curve_points[i]), decoder(curve_points[i+1]))
+    #     energy += kl.item() * curve_distances[i]
 
-    for i in range(len(curve_points) - 1):
-        kl = KL(decoder(curve_points[i]), decoder(curve_points[i+1]))
-        energy += kl.item() * curve_distances[i]
-    print(energy)
-    #kl = KL(decoder(curve_points[1:]), decoder(curve_points[:-1]))
-    #integral = (kl * curve_distances).sum() # scale by each distance
+    kl = KL(decoder(curve_points[1:]), decoder(curve_points[:-1]))
+    energy = kl.sum()
 
     return energy
+
+## Should KL be scaled by distance?
+## Should KL be per point, or across all points and all points shifted left?
+## Why are the contours different
+
 
 def compute_curve_energy_G(c, c_prime, G, n_pieces, N=50):
     """
@@ -159,11 +162,11 @@ def linear_piecewise_function(points):
     
     return f
 
-def compute_geodesic_dm(x1, x2, f, N_pieces=50, steps=20, lr=.1, plot=False, device='cuda'):
+def compute_geodesic_dm(x1, x2, energy_function, N_pieces=50, steps=20, lr=.1, plot=False, device='cuda'):
     """
     Compute a geodesic using linear piecewise direct minimization
     x1, x2: R_2
-    f: decoder function
+    energy_function: computes curve energy between x1 and x2
     N_pieces: number of pieces to divide the curve into
     steps: number of optimization steps
     """
@@ -171,16 +174,16 @@ def compute_geodesic_dm(x1, x2, f, N_pieces=50, steps=20, lr=.1, plot=False, dev
     curve_points = torch.linspace(0, 1, N_pieces).expand(2,-1).T * v_sp + x1
     curve_points_optim = torch.nn.Parameter(torch.clone(curve_points[1:-1]))
 
-    opt = torch.optim.LBFGS([curve_points_optim], lr=lr)
+    opt = torch.optim.AdamW([curve_points_optim], lr=lr)
     with tqdm(range(steps)) as pbar:
         for step in pbar:
             opt.zero_grad()
 
             all_curve_points = torch.cat([x1.unsqueeze(0), curve_points_optim, x2.unsqueeze(0)]).to(device)
 
-            energy = compute_curve_energy_FR(all_curve_points, f)
+            energy = energy_function(all_curve_points)
             energy.backward()
-            opt.step(lambda: energy)
+            opt.step()
             
             energy_p = energy.detach().cpu()
             pbar.set_description(f"step={step}, energy={energy_p}")

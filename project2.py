@@ -12,7 +12,7 @@ from torch.distributions.kl import kl_divergence as KL
 import torch.utils.data
 from curve import compute_geodesic_dm
 from tqdm import tqdm
-
+import os
 
 class GaussianPrior(nn.Module):
     def __init__(self, M):
@@ -208,6 +208,44 @@ def proximity(curve_points, latent):
     pd_min_max = pd_min.max()
     return pd_min_max
 
+class EnsembleVAE:
+    def __init__(self, ensemble_path, device='cuda'):
+        models = []
+        for file in os.listdir(ensemble_path):
+            path = os.path.join(ensemble_path, file)
+            decoder = BernoulliDecoder(new_decoder())
+            single_model = VAE(prior, decoder, encoder).to(device)
+            single_model.load_state_dict(torch.load(path, map_location=torch.device(device)))
+            single_model.eval()
+            models.append(single_model)
+        
+        self.models = models
+    
+    def encoder(self, x):
+        return [model.encoder(x) for model in self.models]
+    def decoder(self, z):
+        return [model.decoder(z) for model in self.models]
+
+    def exact_encoder(self, x):
+        return sum([model.encoder(x).mean for model in self.models])/len(self.models)
+    
+    def decoder_entropy(self, z):
+        return sum([model.decoder(z).entropy().mean().item() for model in self.models])/len(self.models)   
+
+    def decoder_curve_energy(self, curve_points, N=10):
+        """
+        Use monte carlo approximation for expected value of KL of the ensemble
+        
+        """
+        total_energy = 0
+        for i in range(N):
+            l, k = torch.randint(high=len(self.models), size=(2,))
+            f_l = self.models[l].decoder
+            f_k = self.models[k].decoder
+            kl = KL(f_l(curve_points[1:]), f_k(curve_points[:-1]))
+            total_energy += kl.sum()
+        return total_energy # could divide by number of models here
+
 if __name__ == "__main__":
     from torchvision import datasets, transforms
     import numpy as np
@@ -216,12 +254,13 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'plot','heatmap'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'plot','train_ensemble'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--n_ensemble', type=int, default=1, help='Number of models in the ensemble')
     parser.add_argument('--plot', type=str, default='plot.png', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=15, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=150, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
 
     args = parser.parse_args()
@@ -275,48 +314,39 @@ if __name__ == "__main__":
 
     # Define VAE model
     encoder = GaussianEncoder(encoder_net)
-    decoder = BernoulliDecoder(new_decoder())
 
-    model = VAE(prior, decoder, encoder).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    
     # Choose mode to run
     if args.mode == 'train':
         # Define optimizer
+        
+        os.makedirs(args.model)
+        for i in range(args.n_ensembles):
+            model = VAE(prior, BernoulliDecoder(new_decoder()), encoder).to(device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-        # Train model
-        train(model, optimizer, mnist_train_loader, args.epochs, args.device)
+            train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
-        # Save model
-        torch.save(model.state_dict(), args.model)
-
-    elif args.mode=='heatmap':
-        plot_average_entropy(model.decoder)
+            # Save model
+            model_path = os.path.join(args.model, f'{i}.pt')
+            torch.save(model.state_dict(), model_path)
 
     elif args.mode == 'plot':
         import matplotlib.pyplot as plt
 
+        model = EnsembleVAE(args.model, device=args.device)
         ## Load trained model
-        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
-        model.eval()
 
         ## Encode test and train data
         latents, labels = [], []
         with torch.no_grad():
             for x, y in mnist_train_loader:
-                z = model.encoder(x.to(device))
+                z = encoder(x.to(device))
                 latents.append(z.mean)
                 labels.append(y)
             latents = torch.concatenate(latents, dim=0).cpu()
             labels = torch.concatenate(labels, dim=0)
 
-        ## Plot training data
-        plt.figure()
-        for k in range(num_classes):
-            idx = labels == k
-            plt.scatter(latents[idx, 0], latents[idx, 1])
-
-        range_: tuple[int, int] = (-15, 15)
+        range_: tuple[int, int] = (-8, 8)
         num_points: int = 50
         x, y = np.linspace(*range_, 50), np.linspace(*range_, 50)
         X, Y = np.meshgrid(x, y)
@@ -325,22 +355,31 @@ if __name__ == "__main__":
         Z = np.zeros_like(X)
         for i in range(num_points):
             for j in range(num_points):
-                z = torch.tensor([X[i, j], Y[i, j]]).float()
-                Z[i, j] = model.decoder(z).entropy().mean().item()
+                z = torch.tensor([X[i, j], Y[i, j]]).float().cuda()
+                Z[i, j] = model.decoder_entropy(z)
 
-        plt.contourf(X, Y, Z, levels=20)
-            
-        ## Plot random geodesics
-        num_curves: int = 1
+        plt.pcolormesh(Z)
+        plt.colorbar()
+
+        ## Plot training data
+        for k in range(num_classes):
+            idx = labels == k
+            plt.scatter(latents[idx, 0], latents[idx, 1], s=2)
+
+        # Plot random geodesics
+        num_curves: int = 3
         curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
-
         for k in range(num_curves):
             i = curve_indices[k, 0]
             j = curve_indices[k, 1]
             z0 = latents[i]
             z1 = latents[j]
+            
+            # z0 = latents[latents.argmin(dim=0)]
+            # z1 = latents[latents.argmax(dim=0)]
+            
             # TODO: Compute, and plot geodesic between z0 and z1
-            ts = compute_geodesic_dm(z0, z1,f=model.decoder, N_pieces=10, steps=400, lr=6e-3)
+            ts = compute_geodesic_dm(z0, z1,energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=3e-4)
             plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1], color='r')
 
         plt.savefig(args.plot)
