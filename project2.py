@@ -7,6 +7,7 @@
 import torch
 import torch.nn as nn
 import torch.distributions as td
+import numpy as np
 from torch.distributions.kl import kl_divergence as KL
 import torch.utils.data
 from curve import compute_geodesic_dm
@@ -207,9 +208,6 @@ def proximity(curve_points, latent):
     pd_min_max = pd_min.max()
     return pd_min_max
 
-
-    
-
 if __name__ == "__main__":
     from torchvision import datasets, transforms
     import glob
@@ -217,7 +215,7 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'plot'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'plot','heatmap'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot', type=str, default='plot.png', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -277,6 +275,7 @@ if __name__ == "__main__":
     # Define VAE model
     encoder = GaussianEncoder(encoder_net)
     decoder = BernoulliDecoder(new_decoder())
+
     model = VAE(prior, decoder, encoder).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     
@@ -289,6 +288,9 @@ if __name__ == "__main__":
 
         # Save model
         torch.save(model.state_dict(), args.model)
+
+    elif args.mode=='heatmap':
+        plot_average_entropy(model.decoder)
 
     elif args.mode == 'plot':
         import matplotlib.pyplot as plt
@@ -314,7 +316,7 @@ if __name__ == "__main__":
             plt.scatter(latents[idx, 0], latents[idx, 1])
             
         ## Plot random geodesics
-        num_curves = 10
+        num_curves = 2
         curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
 
 
@@ -325,8 +327,8 @@ if __name__ == "__main__":
             z0 = latents[i]
             z1 = latents[j]
             # TODO: Compute, and plot geodesic between z0 and z1
-            ts = compute_geodesic_dm(z0, z1,f=model.decoder, N_pieces=100, steps=400, lr=3e-4)
-            plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1])
+            ts = compute_geodesic_dm(z0, z1,f=model.decoder, N_pieces=10, steps=400, lr=6e-3)
+            plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1], color='r')
 
         plt.savefig(args.plot)
 

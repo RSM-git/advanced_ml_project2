@@ -93,14 +93,19 @@ def evaluate_piecewise_curve(x, curve_points, eps=1e-5):
 def compute_curve_energy_FR(curve_points, decoder, device='cuda'):
     """
     Compute the fisher rao curve energy (i.e., integral of KL divergence along the curve)
+    QUESTION: do we need to scale by each curve length for the integral???
     """
-    integral = 0
+    energy = 0
     curve_distances = torch.norm(torch.diff(curve_points, dim=0), dim=1)
 
-    kl = KL(decoder(curve_points[1:]), decoder(curve_points[:-1]))
-    integral = (kl * curve_distances).sum() # scale by each distance
+    for i in range(len(curve_points) - 1):
+        kl = KL(decoder(curve_points[i]), decoder(curve_points[i+1]))
+        energy += kl.item() * curve_distances[i]
+    print(energy)
+    #kl = KL(decoder(curve_points[1:]), decoder(curve_points[:-1]))
+    #integral = (kl * curve_distances).sum() # scale by each distance
 
-    return integral
+    return energy
 
 def compute_curve_energy_G(c, c_prime, G, n_pieces, N=50):
     """
