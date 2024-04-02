@@ -162,7 +162,7 @@ def linear_piecewise_function(points):
     
     return f
 
-def compute_geodesic_dm(x1, x2, energy_function, N_pieces=50, steps=20, lr=.1, plot=False, device='cuda'):
+def compute_geodesic_dm(x1, x2, energy_function, N_pieces=50, steps=20, lr=.1, plot=False, device='cuda', progress_bar: bool = True):
     """
     Compute a geodesic using linear piecewise direct minimization
     x1, x2: R_2
@@ -175,18 +175,19 @@ def compute_geodesic_dm(x1, x2, energy_function, N_pieces=50, steps=20, lr=.1, p
     curve_points_optim = torch.nn.Parameter(torch.clone(curve_points[1:-1]))
 
     opt = torch.optim.AdamW([curve_points_optim], lr=lr)
-    with tqdm(range(steps)) as pbar:
-        for step in pbar:
-            opt.zero_grad()
+    if progress_bar:
+        steps = tqdm(range(steps))
+    else:
+        steps = range(steps)
 
-            all_curve_points = torch.cat([x1.unsqueeze(0), curve_points_optim, x2.unsqueeze(0)]).to(device)
+    for step in steps:
+        opt.zero_grad()
 
-            energy = energy_function(all_curve_points) / N_pieces
-            energy.backward()
-            opt.step()
-            
-            energy_p = energy.detach().cpu()
-            pbar.set_description(f"step={step}, energy={energy_p}")
+        all_curve_points = torch.cat([x1.unsqueeze(0), curve_points_optim, x2.unsqueeze(0)]).to(device)
+
+        energy = energy_function(all_curve_points) / N_pieces
+        energy.backward()
+        opt.step()
     
     curve_points_final = torch.cat([x1.unsqueeze(0), curve_points_optim, x2.unsqueeze(0)], dim=0)
 

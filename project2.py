@@ -223,7 +223,8 @@ class EnsembleVAE:
         if n_models is not None:
             self.models = models[:n_models]
         else:
-            self.models=models
+            self.models = models
+
     
     def encoder(self, x):
         return [model.encoder(x) for model in self.models]
@@ -231,13 +232,13 @@ class EnsembleVAE:
         return [model.decoder(z) for model in self.models]
 
     def exact_encoder(self, x):
-        return sum([model.encoder(x).mean for model in self.models])/len(self.models)
+        return sum([model.encoder(x).mean for model in self.models]) / len(self.models)
     
     def decoder_entropy(self, z):
         # maybe convert to discrete bernoulli before getting entropy
-        return sum([model.decoder(z).entropy().mean().item() for model in self.models])/len(self.models)   
+        return sum([model.decoder(z).entropy().mean().item() for model in self.models]) / len(self.models)
 
-    def decoder_curve_energy(self, curve_points, N=10):
+    def decoder_curve_energy(self, curve_points, N=25):
         """
         Use monte carlo approximation for expected value of KL of the ensemble
         
@@ -248,17 +249,18 @@ class EnsembleVAE:
             f_l = self.models[l].decoder
             f_k = self.models[k].decoder
             # convert these to standard bernoulli (not continuous)
-            c_f_l = lambda z: td.Bernoulli(logits=f_l(z).mean)
-            c_f_k = lambda z: td.Bernoulli(logits=f_k(z).mean)
+            # c_f_l = lambda z: td.Bernoulli(probs=f_l(z).mean)
+            # c_f_k = lambda z: td.Bernoulli(probs=f_k(z).mean)
 
-            kl = KL(c_f_l(curve_points[:-1]), c_f_k(curve_points[1:]))
+            kl = KL(f_l(curve_points[:-1]), f_k(curve_points[1:]))
 
-            if kl.sum() < 0:
-                print('negative kl')
+            # if kl.sum() < 0:
+                # print('negative kl')
 
             total_energy += kl.sum()
         energy = total_energy / N
         return energy # could divide by number of models here
+
 
 if __name__ == "__main__":
     from torchvision import datasets, transforms
@@ -293,7 +295,7 @@ if __name__ == "__main__":
         return torch.utils.data.TensorDataset(new_data, new_targets)
     
     num_train_data = 2048
-    num_test_data = 16  # we keep this number low to only compute a few geodesics
+    num_test_data = 128  # we keep this number low to only compute a few geodesics
     num_classes = 3
     train_tensors = datasets.MNIST('data/', train=True, download=True, transform=transforms.Compose([transforms.ToTensor()]))
     train_data = subsample(train_tensors.data, train_tensors.targets, num_train_data, num_classes)
@@ -349,13 +351,15 @@ if __name__ == "__main__":
         import matplotlib.pyplot as plt
 
         model = EnsembleVAE(args.model, device=args.device)
+
+        model_encoder = model.models[0].encoder
         ## Load trained model
 
         ## Encode test and train data
         latents, labels = [], []
         with torch.no_grad():
             for x, y in mnist_train_loader:
-                z = encoder(x.to(device))
+                z = model_encoder(x.to(device))
                 latents.append(z.mean)
                 labels.append(y)
             latents = torch.concatenate(latents, dim=0).cpu()
@@ -382,9 +386,9 @@ if __name__ == "__main__":
             plt.scatter(latents[idx, 0], latents[idx, 1], s=4)
 
         # Plot random geodesics
-        num_curves: int = 10
+        num_curves: int = 50
         curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
-        all_curve_points=[]
+        all_curve_points = []
         for k in range(num_curves):
             i = curve_indices[k, 0]
             j = curve_indices[k, 1]
@@ -395,7 +399,7 @@ if __name__ == "__main__":
             # z1 = latents[latents.argmax(dim=0)]
             
             # TODO: Compute, and plot geodesic between z0 and z1
-            ts = compute_geodesic_dm(z0, z1,energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=3e-3)
+            ts = compute_geodesic_dm(z0, z1, energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=8e-4)
             all_curve_points.append(ts)
             plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1], color='r')
 
@@ -405,15 +409,51 @@ if __name__ == "__main__":
     elif args.mode == 'proximity':  
         
         import matplotlib.pyplot as plt
-        proximities=[]
 
-        for i in range(10):
-            model = EnsembleVAE(args.model, device=args.device,n_models=i+1)
-            ts = compute_geodesic_dm(z0, z1,energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=3e-3)
-            all_curve_points.append(ts)
+        model = EnsembleVAE(args.model, device=args.device)
 
+        encoder = model.models[0].encoder
+
+        num_curves: int = 50
+        curve_indices = torch.randint(num_train_data, (num_curves, 2))
+        proximities = []
+        all_curve_points = []
+
+        latents, labels = [], []
+        with torch.no_grad():
+            for x, y in mnist_train_loader:
+                z = encoder(x.to(device))
+                latents.append(z.mean)
+                labels.append(y)
+            latents = torch.concatenate(latents, dim=0).cpu()
+            labels = torch.concatenate(labels, dim=0)
+
+        for i in tqdm(range(10)):
+            model = EnsembleVAE(args.model, device=args.device, n_models=i+1)
+
+            for k in range(num_curves):
+                i = curve_indices[k, 0]
+                j = curve_indices[k, 1]
+                z0 = latents[i]
+                z1 = latents[j]
+                ts = compute_geodesic_dm(z0, z1, energy_function=model.decoder_curve_energy, N_pieces=20, steps=25, lr=8e-4, progress_bar=False)
+                all_curve_points.append(ts)
+
+            ps = []
             for curve_points in all_curve_points:
                 p = proximity(curve_points, latents)
-                proximities.append(p)
+                ps.append(p.detach().numpy())
+
+            proximities.append(np.mean(ps))
+
+
+        plt.plot(range(1, 11), proximities)
+        plt.xlabel("Number of models in ensemble")
+        plt.xticks(range(1, 11))
+        plt.ylabel("Average Proximity")
+
+        plt.tight_layout()
+        plt.savefig('proximityTEST2.png')
+        plt.clf()
 
 
