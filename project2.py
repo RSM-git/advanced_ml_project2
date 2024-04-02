@@ -215,6 +215,7 @@ class EnsembleVAE:
         for file in os.listdir(ensemble_path):
             path = os.path.join(ensemble_path, file)
             decoder = BernoulliDecoder(new_decoder())
+            encoder = GaussianEncoder(get_encoder())
             single_model = VAE(prior, decoder, encoder).to(device)
             single_model.load_state_dict(torch.load(path, map_location=torch.device(device)))
             single_model.eval()
@@ -304,16 +305,18 @@ if __name__ == "__main__":
     # Define prior distribution
     M = args.latent_dim
     prior = GaussianPrior(M)
+    def get_encoder():
 
-    encoder_net = nn.Sequential(
-        nn.Conv2d(1, 16, 3, stride=2, padding=1),
-        nn.Softplus(),
-        nn.Conv2d(16, 32, 3, stride=2, padding=1),
-        nn.Softplus(),
-        nn.Conv2d(32, 32, 3, stride=2, padding=1),
-        nn.Flatten(),
-        nn.Linear(512, 2*M),
-    )
+        encoder_net = nn.Sequential(
+            nn.Conv2d(1, 16, 3, stride=2, padding=1),
+            nn.Softplus(),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            nn.Softplus(),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),
+            nn.Flatten(),
+            nn.Linear(512, 2*M),
+        )
+        return encoder_net
 
     def new_decoder():
         decoder_net = nn.Sequential(
@@ -329,7 +332,6 @@ if __name__ == "__main__":
         return decoder_net
 
     # Define VAE model
-    encoder = GaussianEncoder(encoder_net)
 
     # Choose mode to run
     if args.mode == 'train':
@@ -338,6 +340,7 @@ if __name__ == "__main__":
         if not os.path.exists(args.model):
             os.makedirs(args.model)
         for i in range(args.n_ensembles):
+            encoder = GaussianEncoder(get_encoder())
             model = VAE(prior, BernoulliDecoder(new_decoder()), encoder).to(device)
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
@@ -401,8 +404,9 @@ if __name__ == "__main__":
             # TODO: Compute, and plot geodesic between z0 and z1
             ts = compute_geodesic_dm(z0, z1, energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=8e-4)
             all_curve_points.append(ts)
-            plt.plot(ts.detach().numpy()[:,0], ts.detach().numpy()[:,1], color='r')
+            plt.plot(ts.detach().numpy()[:, 0], ts.detach().numpy()[:, 1])
 
+        plt.tight_layout()
         plt.savefig(args.plot)
         plt.clf()
     
@@ -446,14 +450,13 @@ if __name__ == "__main__":
 
             proximities.append(np.mean(ps))
 
-
         plt.plot(range(1, 11), proximities)
         plt.xlabel("Number of models in ensemble")
         plt.xticks(range(1, 11))
         plt.ylabel("Average Proximity")
 
         plt.tight_layout()
-        plt.savefig('proximityTEST2.png')
+        plt.savefig('proximity.png')
         plt.clf()
 
 
