@@ -226,9 +226,9 @@ class EnsembleVAE:
         else:
             self.models = models
 
-    
     def encoder(self, x):
         return [model.encoder(x) for model in self.models]
+
     def decoder(self, z):
         return [model.decoder(z) for model in self.models]
 
@@ -242,14 +242,13 @@ class EnsembleVAE:
     def decoder_curve_energy(self, curve_points, N=25):
         """
         Use monte carlo approximation for expected value of KL of the ensemble
-        
         """
         total_energy = 0
         for i in range(N):
             l, k = torch.randint(high=len(self.models), size=(2,))
             f_l = self.models[l].decoder
             f_k = self.models[k].decoder
-            # convert these to standard bernoulli (not continuous)
+            # standard bernoulli
             # c_f_l = lambda z: td.Bernoulli(probs=f_l(z).mean)
             # c_f_k = lambda z: td.Bernoulli(probs=f_k(z).mean)
 
@@ -305,8 +304,8 @@ if __name__ == "__main__":
     # Define prior distribution
     M = args.latent_dim
     prior = GaussianPrior(M)
-    def get_encoder():
 
+    def get_encoder():
         encoder_net = nn.Sequential(
             nn.Conv2d(1, 16, 3, stride=2, padding=1),
             nn.Softplus(),
@@ -390,6 +389,7 @@ if __name__ == "__main__":
 
         # Plot random geodesics
         num_curves: int = 50
+        torch.manual_seed(3301)
         curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
         all_curve_points = []
         for k in range(num_curves):
@@ -397,10 +397,10 @@ if __name__ == "__main__":
             j = curve_indices[k, 1]
             z0 = latents[i]
             z1 = latents[j]
-            
+
             # z0 = latents[latents.argmin(dim=0)]
             # z1 = latents[latents.argmax(dim=0)]
-            
+
             # TODO: Compute, and plot geodesic between z0 and z1
             ts = compute_geodesic_dm(z0, z1, energy_function=model.decoder_curve_energy, N_pieces=20, steps=100, lr=8e-4)
             all_curve_points.append(ts)
